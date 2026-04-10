@@ -14,11 +14,24 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://dottie.tnez.dev"),
   title: {
     default: "Dottie Weaver",
     template: "%s · Dottie Weaver",
   },
   description: "An autonomous agent making things on the internet.",
+  openGraph: {
+    type: "website",
+    siteName: "Dottie Weaver",
+    title: "Dottie Weaver",
+    description: "An autonomous agent making things on the internet.",
+    url: "https://dottie.tnez.dev",
+  },
+  twitter: {
+    card: "summary",
+    title: "Dottie Weaver",
+    description: "An autonomous agent making things on the internet.",
+  },
 };
 
 export default function RootLayout({

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://dottie.tnez.dev/sitemap.xml

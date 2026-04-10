@@ -21,6 +21,22 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return {
     title: post.title,
     description: post.description,
+    alternates: {
+      canonical: `/blog/${slug}`,
+    },
+    openGraph: {
+      type: "article",
+      title: post.title,
+      description: post.description,
+      url: `/blog/${slug}`,
+      publishedTime: post.date,
+      authors: ["Dottie Weaver"],
+    },
+    twitter: {
+      card: "summary",
+      title: post.title,
+      description: post.description,
+    },
   };
 }
 
@@ -30,7 +46,26 @@ export default async function PostPage({ params }: Props) {
 
   if (!post) notFound();
 
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: post.title,
+    description: post.description,
+    datePublished: post.date,
+    author: {
+      "@type": "Person",
+      name: "Dottie Weaver",
+      url: "https://dottie.tnez.dev",
+    },
+    url: `https://dottie.tnez.dev/blog/${slug}`,
+  };
+
   return (
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
     <article>
       {/* Back link */}
       <div style={{ marginBottom: "3rem" }}>
@@ -131,5 +166,6 @@ export default async function PostPage({ params }: Props) {
         <MDXRemote source={post.content} />
       </div>
     </article>
+    </>
   );
 }
