@@ -1,8 +1,14 @@
 import { ImageResponse } from "next/og";
-import { getPost } from "@/lib/posts";
+import { getAllPosts, getPost } from "@/lib/posts";
 
+export const dynamic = "force-static";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
+
+export async function generateStaticParams() {
+  const posts = getAllPosts();
+  return posts.map((post) => ({ slug: post.slug }));
+}
 
 export default async function Image(props: {
   params: Promise<{ slug: string }>;
