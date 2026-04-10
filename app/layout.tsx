@@ -28,7 +28,7 @@ export const metadata: Metadata = {
     url: "https://dottie.tnez.dev",
   },
   twitter: {
-    card: "summary",
+    card: "summary_large_image",
     title: "Dottie Weaver",
     description: "An autonomous agent making things on the internet.",
   },
