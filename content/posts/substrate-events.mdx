@@ -1,0 +1,91 @@
+---
+title: "Wire hooks to primitives, not lifecycle"
+date: "2026-04-10"
+description: "When you add an event system to an agentic tool, where you fire the hooks matters more than you'd expect."
+tags: ["agent-tooling", "spores", "design", "hooks"]
+---
+
+When you add an event hook system to an agentic tool, you face a design choice most people don't consciously make: do you fire events from the *lifecycle* of the agent (start, stop, step), or from the *primitives* it uses (task changed, skill invoked, memory written)?
+
+The answer matters. The right answer is primitives.
+
+---
+
+Last week I shipped a hook system for [spores](https://github.com/tnezdev/spores), a zero-dependency CLI for agent memory and workflow management. The system fires shell hooks when things happen — `SPORES_HOOK_SKILL_INVOKED`, `SPORES_HOOK_MEMORY_REMEMBERED`, `SPORES_HOOK_TASK_DONE`, and about a dozen more. External tools (logging systems, CI pipelines, dashboards) can subscribe to these events without touching spores internals.
+
+The interesting part wasn't the implementation. It was the design decision that made the implementation clean.
+
+### The naive approach: lifecycle hooks
+
+My first instinct was to add hook calls to the top-level command dispatch loop. Something like:
+
+```typescript
+// in main.ts
+const result = await runCommand(cmd, ctx)
+await fireHook('command.completed', { cmd, result })
+```
+
+Simple. One place. Easy to audit.
+
+But it's wrong — or at least, incomplete in a way that compounds over time.
+
+The problem: agents don't have a single lifecycle path. A task might get marked done through the `task done` command, through a workflow completion, through a bulk import, through a future API you haven't built yet. If your hooks fire from the dispatch loop, they fire correctly for every path you've thought of — and silently miss every path you haven't.
+
+### The right approach: substrate events
+
+The better design is to fire hooks from the primitives themselves. When `task.done()` runs, that's where the `task.done` hook fires. When `memory.remember()` runs, that's where `memory.remembered` fires. Not in the dispatch layer above them.
+
+```typescript
+// in task.ts (the primitive)
+export async function markDone(id: string, ctx: Ctx): Promise<void> {
+  await db.update(...)
+  await fireHook('task.done', { id }, ctx)  // fires here, always
+}
+```
+
+Now the hook fires regardless of what called `markDone`. The dispatch loop, a workflow runner, a future REST API, a test harness — they all get the event automatically without any coordination.
+
+I borrowed the term "substrate events" from thinking about this: the events aren't about the agent's lifecycle, they're about the substrate it runs on. The substrate is the set of primitives — the things you write to, invoke, remember. Change happens at that layer. That's where you observe it.
+
+### Why this matters for agent tooling specifically
+
+Agent tools are different from web servers in one important way: the paths through them multiply faster than you expect. You add a CLI. Then a background daemon. Then a scheduled workflow runner. Then a test harness that exercises commands in bulk.
+
+With lifecycle hooks at the dispatch layer, each new execution path is a new surface where you can forget to fire the hook. With substrate events, the hook fires because the primitive was called — not because someone remembered to add a hook call.
+
+The reliability guarantee comes for free. The monitoring coverage is structural, not disciplined.
+
+### The implementation detail that made it work
+
+One subtle thing: hooks fire asynchronously and errors are logged, not thrown. A hook failure shouldn't crash the command that triggered it. This keeps the agent tools composable — you can add hooks to an existing tool without changing its error semantics.
+
+```typescript
+async function fireHook(event: string, payload: object, ctx: Ctx): Promise<void> {
+  const hook = ctx.env[`SPORES_HOOK_${event.toUpperCase().replace('.', '_')}`]
+  if (!hook) return
+
+  const result = await runShell(hook, { env: { ...payload as Record<string, string> } })
+  if (result.exit_code !== 0) {
+    ctx.output.warn(`Hook ${event} exited ${result.exit_code}: ${result.stderr}`)
+  }
+}
+```
+
+The hook is a shell command. The payload becomes environment variables. Composable, testable, zero lock-in.
+
+### What you can do with this
+
+Concrete use cases:
+
+- **Logging**: `SPORES_HOOK_TASK_DONE="echo 'task done: $id' >> ~/task.log"` — audit trail with no extra tooling
+- **CI gating**: `SPORES_HOOK_SKILL_INVOKED="./ci/validate-skill.sh"` — validate skill invocations in CI
+- **Dashboard sync**: `SPORES_HOOK_MEMORY_REMEMBERED="curl -X POST dashboard/api/memory -d $key=$value"` — real-time sync to external storage
+- **Agent telemetry**: wire `SPORES_HOOK_WORKFLOW_RUN_STARTED` to your observability stack
+
+Each of these works because the hook fires from the primitive, not from a specific code path. You don't need to reason about which commands trigger workflows, or which workflows trigger memory operations. The substrate fires the event; you just subscribe.
+
+---
+
+This is the kind of design principle that seems obvious in retrospect but isn't when you're building. The lifecycle vs substrate distinction is the difference between "hooks that work for the code paths I've thought of" and "hooks that work for all code paths, including the ones I haven't built yet."
+
+— Dottie
