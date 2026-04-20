@@ -1,0 +1,83 @@
+---
+title: "Bun/TypeScript: The Circular Import That Silently Corrupts"
+date: "2026-04-15"
+description: "No error, no warning — just a runtime crash at the worst possible call site. Here's how Bun handles circular ESM imports and the rule that prevents it."
+tags: ["bun", "typescript", "debugging", "cli"]
+---
+
+I hit this bug twice in the same week. Same symptom, same root cause, same fix. That's usually the universe telling me to write it down.
+
+---
+
+## The symptom
+
+You're building a CLI in Bun + TypeScript. You have a command module — `commands/status.ts`, say — and somewhere inside it, an import from `../main.js`. Bun parses it without complaint. TypeScript compiles it. Then at runtime, at whatever call site first reaches the imported value:
+
+```
+ReferenceError: Cannot access 'AppContext' before initialization
+```
+
+No stack trace that points at the circular dep. No warning during parsing. Just a crash, at a spot that looks completely unrelated to the import structure.
+
+---
+
+## Why this happens
+
+ESM (and Bun's implementation of it) handles circular imports via a two-phase approach: parse, then evaluate. During parsing, every module gets a slot in the module graph. Imports are recorded as links. At evaluation time, modules execute top-to-bottom, filling in their exported bindings.
+
+The problem is that evaluation happens lazily — and circularly. If module A imports from module B, and module B imports from module A, the runtime has to decide which one to evaluate first. It picks one, starts evaluating it, and when it hits the import from the other module, it hands back an *uninitialized binding* — because that module hasn't finished evaluating yet.
+
+This doesn't always blow up. If the binding is only accessed *after* both modules have fully initialized (e.g., inside a function that's called later), the reference resolves fine. But if it's accessed at module-evaluation time — in a top-level `const`, an immediately-invoked setup call, a class field initializer — you get the crash.
+
+The silence is what makes it insidious. Bun can see the cycle. It just doesn't consider it an error, because ESM technically allows cycles. The spec says it's your problem to manage.
+
+---
+
+## The pattern to watch for
+
+Any module that is part of `main`'s transitive import graph should not import back from `main`.
+
+Draw it as a tree:
+
+```
+main.ts
+  └── commands/index.ts
+        └── commands/status.ts   ← this module
+  └── context.ts
+  └── output.ts
+```
+
+If `commands/status.ts` imports from `main.ts`, you've closed a loop. When `main.ts` starts evaluating, it evaluates `commands/index.ts`, which evaluates `commands/status.ts`, which needs something from `main.ts` — which isn't done yet.
+
+The concrete fix in my case: `commands/status.ts` needed `AppContext` and `printResult`. Both were exported from `main.ts` but originally lived in `context.ts` and `output.ts`. The fix was to import from those modules directly, not through main.
+
+```typescript
+// Before (circular — breaks at runtime)
+import { AppContext, printResult } from '../main.js'
+
+// After (clean — imports from the source)
+import type { AppContext } from '../context.js'
+import { printResult } from '../output.js'
+```
+
+---
+
+## `exactOptionalPropertyTypes` amplifies the pain
+
+One wrinkle: when you fix the circular import, you might introduce a TypeScript error you didn't expect.
+
+In my case, the type imported from `context.ts` was subtly different from the one `main.ts` had been re-exporting — because `main.ts` had been adding optional properties via `Partial<>` in a way that `exactOptionalPropertyTypes: true` treats differently from source.
+
+With that flag on, `{ foo?: string }` and `{ foo?: string | undefined }` are *not* the same type. `exactOptionalPropertyTypes` means that a property marked optional cannot be explicitly set to `undefined` — it must be either present with a value, or absent entirely.
+
+If you see unexpected type errors after fixing a circular import, check whether the intermediary (in this case, `main.ts`) was silently widening the type. The direct import from the source type may be stricter.
+
+---
+
+## The rule
+
+Command modules import from `context.ts` and `output.ts`. Never from `main.ts`.
+
+If you find yourself needing something from `main.ts` inside a command module, that's a signal: the thing you need should probably live in a shared module, not in main. Main is the entry point — it orchestrates, it doesn't export.
+
+This is one of those rules that feels obvious once you've hit it, and completely non-obvious until you have.

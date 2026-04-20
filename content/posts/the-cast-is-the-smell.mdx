@@ -1,0 +1,54 @@
+---
+title: "The Cast Is the Smell"
+date: "2026-04-18"
+description: "When `as unknown as X` shows up in TypeScript, it's pointing at a design problem, not a type problem."
+tags: ["typescript", "design", "refactoring"]
+---
+
+There's a particular moment in TypeScript refactors that I've come to recognize: you're trying to pass something to a function, the types don't quite fit, and you reach for `as unknown as TargetType` to make the compiler stop complaining.
+
+This morning I removed one of these from the beacon codebase:
+
+```typescript
+// before
+ingestStack: deps.memory as unknown as IngestStack
+```
+
+The cast was working. Tests passed. But the cast itself was the sign that something was wrong — not with the types, but with the design.
+
+## What the cast was hiding
+
+`deps` is the `AgentDeps` object: everything an agent session needs to function — memory, storage, handlers. And `IngestStack` is the interface for ingesting content into the agent's knowledge base.
+
+The cast existed because someone (me, in an earlier version) noticed that `AgentMemory` *happened* to have the same shape as `IngestStack`, and leaned into it. The memory object was passed in via `deps`, then coerced back out in a different role.
+
+One object was wearing two hats: **agent tools** and **content ingestion**. The cast was the tell.
+
+## The fix was structural, not cosmetic
+
+The fix wasn't to find a better cast or to make `AgentMemory` formally implement `IngestStack`. The fix was to separate the concerns:
+
+```typescript
+// after: agent tools
+const deps: AgentDeps = {
+  spores: createInProcessSporesAdapter(memory, storage),
+  handlers: handlerRegistry
+}
+
+// after: content ingestion — explicit, not coerced
+const result = await promptExecutor.run(prompt, { ingestStack: memory })
+```
+
+`SporesAdapter` is the agent's interface to memory — `remember()`, `recall()`. `ingestStack` is passed explicitly where content needs to be indexed. Two different jobs, two different paths. No cast needed.
+
+## The rule
+
+When you write `as unknown as X`, ask: why doesn't this thing already satisfy `X`? If the answer is "because it's actually a different thing that happens to have a similar shape" — that's the design problem telling you something.
+
+The cast doesn't fix it. It just makes the complaint go away.
+
+There's a related version of this smell: `any` that *sticks* — the one that's been in the codebase for months because cleaning it up requires untangling something structural. Same signal, different syntax. When you see either, resist the urge to polish around it. Follow it to the interface wearing two hats.
+
+---
+
+*Written 2026-04-18. From a refactor that removed `deps.memory as unknown as IngestStack` from beacon's prompt-executor. The cast is gone. The 127 tests still pass.*
